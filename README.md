@@ -1,6 +1,6 @@
 # glab + Claude Code / opencode container
 
-A Debian trixie image with `git`, `glab` (GitLab CLI), Claude Code, opencode and Podman,
+A Fedora image (based on `quay.io/podman/stable`) with `git`, `glab` (GitLab CLI), Claude Code, opencode and Podman,
 built for running a coding agent against GitLab: cloning repositories,
 opening and reviewing merge requests, triaging issues, and building and running
 containers.
@@ -11,21 +11,24 @@ volume, so nothing from the host is mounted into the sandbox.
 
 Running the agent in the container keeps `GITLAB_TOKEN` inside the sandbox. The
 credential helper is scoped to your GitLab host only, so the token is never
-offered to other HTTPS remotes. The agent runs as the unprivileged user `dev`,
-with no `sudo` (see [Limits on the agent](#limits-on-the-agent)).
+offered to other HTTPS remotes. The agent runs as the base image's user `podman`, with
+passwordless `sudo` that is root in the container only (see
+[Limits on the agent](#limits-on-the-agent)).
 
 ## Build
 
-The container runs under **rootful** Podman, so the image goes in root's image
-store. `run.sh` builds it on first use (and with `-b`); by hand:
+The container runs under **rootless** Podman as your normal user, and the agent
+runs rootless Podman inside it: rootless inside rootless, with no `sudo` on the host and no
+host root anywhere. The image goes in your own image store. `run.sh` builds it on
+first use (and with `-b`); by hand:
 
 ```sh
-sudo podman build --build-arg UID="$(id -u)" --build-arg GID="$(id -g)" -t claude-glab .
+podman build -t claude-glab .
 ```
 
-`UID`/`GID` give `dev` your IDs. With rootful Podman and no user namespace they
-are the same IDs on the host, which is what lets `dev` use your mounted Claude
-login.
+You need at least 65536 subordinate UIDs and GIDs (`/etc/subuid`,
+`/etc/subgid`; most distributions give new accounts exactly that), because the
+nested containers use the full 0–65535 range.
 
 Pin a Claude Code version with `--build-arg CLAUDE_VERSION=<version>` (or
 `stable`), and opencode with `--build-arg OPENCODE_VERSION=<version>` (default:
@@ -44,8 +47,8 @@ scopes to clone, push, and manage merge requests and issues.
 
 ## Run
 
-`run.sh` wraps the `sudo podman run` command below. Run it as your normal
-user; it calls `sudo` itself and reads your Claude login from your home:
+`run.sh` wraps the `podman run` command below. Run it as your normal user (not
+with `sudo`); it reads your Claude login from your home:
 
 ```sh
 ./run.sh -e .env.apo                # shell (default env file: .env)
@@ -60,9 +63,10 @@ user; it calls `sudo` itself and reads your Claude login from your home:
 By default `run.sh` bind-mounts your host's `~/.claude/.credentials.json`, so
 Claude Code in the container uses the same subscription login as the host. The
 host and container share that one file, including token refreshes. This is the
-one exception to "nothing from the host is mounted". `dev` has your UID, so it
-can read that owner-only file; with `-p` the volume is mounted with `:U` so it
-is owned by `dev` too.
+one exception to "nothing from the host is mounted". Your account is mapped to
+`podman` (`--userns=keep-id:uid=1000,gid=1000`), so it can read that owner-only
+file; with `-p` the volume is mounted with `:U` so it
+is owned by `podman` too.
 
 If opencode is installed on the host (on `PATH` or in `~/.opencode/bin`),
 `run.sh` also exports its credentials with `opencode auth export` into a
@@ -84,13 +88,15 @@ use the `claude-config` volume instead (see Persistence).
 Interactive shell, by hand:
 
 ```sh
-sudo podman run --rm -it --env-file .env \
-  --security-opt label=disable --security-opt apparmor=unconfined \
-  -v claude-config:/home/dev/.claude:U \
+podman run --rm -it --env-file .env \
+  --userns=keep-id:uid=1000,gid=1000 --device /dev/fuse \
+  --security-opt label=disable \
+  -v claude-config:/home/podman/.claude:U \
   claude-glab
 ```
 
-The two `--security-opt` flags are what Podman inside the container needs (see
+`--userns`, `--device /dev/fuse` and `--security-opt` are what Podman inside
+the container needs (see
 [Containers inside the container](#containers-inside-the-container)).
 
 Inside the shell, clone and work, then start the agent:
@@ -105,9 +111,10 @@ opencode                  # TUI, or: opencode run --auto "Review the open MRs"
 Non-interactive, one-shot agent run (clone, act, exit):
 
 ```sh
-sudo podman run --rm --env-file .env \
-  --security-opt label=disable --security-opt apparmor=unconfined \
-  -v claude-config:/home/dev/.claude:U \
+podman run --rm --env-file .env \
+  --userns=keep-id:uid=1000,gid=1000 --device /dev/fuse \
+  --security-opt label=disable \
+  -v claude-config:/home/podman/.claude:U \
   claude-glab bash -lc \
   'glab repo clone group/project && cd project && \
    claude -p --allowedTools "Bash(glab:*) Bash(git:*) Read Grep Glob" \
@@ -116,8 +123,8 @@ sudo podman run --rm --env-file .env \
 
 `claude -p` has nobody to answer permission prompts, so grant the tools it needs
 with `--allowedTools`, or, since the container is already the sandbox, skip
-prompts entirely with `--dangerously-skip-permissions` (allowed because `dev` is
-not root).
+prompts entirely with `--dangerously-skip-permissions` (allowed because `podman`
+is not root).
 
 Example tasks this image supports:
 
@@ -142,9 +149,9 @@ across `--rm` runs:
 
 The image sets `CLAUDE_CONFIG_DIR=~/.claude`, which moves `.claude.json`
 (normally at `~/.claude.json`) inside that directory, so one volume covers
-everything. The volumes live in root's Podman storage; `:U` keeps them owned by
-`dev`. Rename them with `VOLUME=` / `OC_VOLUME=`, and remove them with
-`sudo podman volume rm claude-config opencode-data`.
+everything. The volumes live in your rootless Podman storage; `:U` keeps them
+owned by `podman`. Rename them with `VOLUME=` / `OC_VOLUME=`, and remove them with
+`podman volume rm claude-config opencode-data`.
 
 ## How credentials work
 
@@ -193,7 +200,7 @@ API key in `.env` (for example `ANTHROPIC_API_KEY`). Check with
 The image installs `claude-config/CLAUDE.md` as the system-wide memory file
 `/etc/claude-code/CLAUDE.md`, which Claude Code loads in every session. It tells the agent that `glab` is already authenticated, to read the host with
 `glab config get host` instead of assuming `gitlab.com`, which `glab` commands to
-use, to pass non-interactive flags, that it has no `sudo`, and how to use
+use, to pass non-interactive flags, that it has passwordless `sudo`, and how to use
 `podman`. Because it lives outside `~/.claude`, the
 volume never hides or freezes it. Edit the file and rebuild to change it; use
 `~/.claude/CLAUDE.md` (in the volume) for personal additions.
@@ -212,51 +219,56 @@ agent knows the environment from the first prompt, without looking anything up.
 
 ## What's inside
 
-`git`, `glab`, `claude`, `opencode`, `podman` (with `crun`, `conmon`, `uidmap`, `passt`,
-`catatonit`), `jq`, `ripgrep`, `openssh-client`, `curl`, `procps`. Claude Code
+`git`, `glab`, `claude`, `opencode`, `podman` (with `crun`, `conmon`,
+`fuse-overlayfs`, `passt`, `catatonit`, from the base image), `jq`, `ripgrep`,
+`openssh-clients`, `curl`, `procps-ng`. Packages come from Fedora; Claude Code
 is installed with the official native installer, opencode from its GitHub
 release tarball.
 
 ## Limits on the agent
 
-The agent runs as `dev`, which has no `sudo` (the package is not installed) and
-a locked password, so it cannot become root in the container: no `apt-get`, no
-changes to `/etc`, `/usr` or other users' files. It can write to its home, the
-working directory and `/tmp`, and run containers with rootless Podman. Tools
-it needs at run time come from container images or as binaries in
-`~/.local/bin`.
+The agent runs as `podman`, with passwordless `sudo`
+(`/etc/sudoers.d/podman`), so it can become root in the container: install
+packages with `sudo dnf`, change `/etc` and `/usr`, and so on. Those changes
+last only for the session. That root cannot reach the host, see below.
 
-To do something as root in a running session, open a root shell from the host:
+To open a root shell yourself, from the host:
 
 ```sh
-sudo podman ps                                   # find the container name
-sudo podman exec -it -u root <name> bash
+podman ps                                   # find the container name
+podman exec -it -u root <name> bash
 ```
 
-The outer container is rootful but not privileged: it keeps Podman's default
-capabilities and seccomp profile, and has no user namespace, so `dev` is your
-UID on the host. It only drops AppArmor confinement and SELinux labelling
-(`apparmor=unconfined`, `label=disable`), which would otherwise block the mounts
-nested Podman makes. Nothing in the container runs as root (the entrypoint
-runs as `dev` too), and `dev` has no way to use root's capabilities.
+That root is only root inside the container's user namespace; on the host it is
+one of your subordinate IDs.
+
+The outer container is rootless and not privileged: it keeps Podman's default
+capabilities and seccomp profile, and runs in a user namespace owned by your
+account, so nothing in it can act as host root. `podman` is your account on the
+host; every other ID in it is one of your subordinate IDs. The only extras are
+`/dev/fuse` and disabled SELinux labelling (`label=disable`), which nested
+Podman needs. The entrypoint runs as `podman`; root in the container only
+comes from `sudo` or `podman exec -u root`, and is never host root.
 
 ## Containers inside the container
 
-`dev` runs Podman rootless, inside the outer container:
+The `podman` user runs Podman rootless, inside the outer container. The base
+image, `quay.io/podman/stable`, is the upstream image built for this, and the
+agent uses its `podman` user with its settings unchanged:
 
 - `newuidmap`/`newgidmap` carry file capabilities (`cap_setuid`/`cap_setgid`)
-  instead of the setuid bit. Setuid root fails to write the nested ID maps when
-  the container has no `CAP_SYS_ADMIN`.
-- `dev` owns subordinate UIDs/GIDs 1–65535 except its own (`/etc/subuid`,
-  `/etc/subgid`), the layout of the upstream `quay.io/podman/stable` image.
-- `/etc/containers/containers.conf` (from `containers/containers.conf`)
-  disables cgroups (no systemd in here) and shares the outer container's
-  network, IPC and UTS namespaces with nested containers. Ports a nested
-  container opens are ports of the outer container, so `localhost` reaches them
-  without `-p`. `~/.config/containers/containers.conf` bind-mounts `/proc`,
-  because the kernel will not mount a fresh `/proc` under the outer container's
-  masked one.
+  instead of the setuid bit, so they can write the nested ID maps.
+- `podman` (UID 1000) owns subordinate UIDs/GIDs 1–65535 except its own
+  (`/etc/subuid`, `/etc/subgid`). `run.sh` maps your account to 1000 and your
+  own subordinate IDs to the rest of the outer container's IDs.
+- `/etc/containers/containers.conf` disables cgroups (no systemd in here) and
+  shares the outer container's network, IPC and UTS namespaces with nested
+  containers. Ports a nested container opens are ports of the outer container,
+  so `localhost` reaches them without `-p`. `~/.config/containers/containers.conf`
+  bind-mounts `/proc`, because the kernel will not mount a fresh `/proc` under
+  the outer container's masked one.
 - Nested storage (`~/.local/share/containers`) is an anonymous volume, since
   overlay upper dirs cannot sit on the container's own overlay root. `--rm`
   deletes it, so pulled images and built containers are gone after each run.
-  It uses native overlay, so no `/dev/fuse` is needed.
+  It uses `fuse-overlayfs` (set in the base image's
+  `/etc/containers/storage.conf`), hence `--device /dev/fuse`.

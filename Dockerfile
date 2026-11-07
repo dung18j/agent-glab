@@ -1,38 +1,37 @@
 # syntax=docker/dockerfile:1
 #
-# Debian trixie image with git, glab (GitLab CLI), Claude Code, opencode and
-# Podman, for the unprivileged user "dev" (no sudo).
+# Fedora image (quay.io/podman/stable) with git, glab (GitLab CLI), Claude Code,
+# opencode and Podman, for the base image's user "podman" (passwordless sudo).
 # Intended for a coding agent (Claude Code or opencode) that clones GitLab repositories, opens or
 # reviews merge requests, triages issues, and runs containers (rootless Podman
 # inside the container).
 #
-# Build with rootful Podman (run.sh does this for you, see README.md):
-#   sudo podman build --build-arg UID="$(id -u)" --build-arg GID="$(id -g)" -t claude-glab .
+# The base image is the upstream Podman image, which is set up for running
+# Podman inside a container. The container itself runs under rootless Podman on
+# the host: rootless inside rootless, no root anywhere.
+#
+# Build with rootless Podman (run.sh does this for you, see README.md):
+#   podman build -t claude-glab .
 #
 # Run (credentials come from .env, see .env.example). Repositories are cloned
-# inside the container and are discarded with it; only Claude Code state
-# persists, in a named volume. The security options let rootless Podman run
-# inside the container:
-#   sudo podman run --rm -it --env-file .env \
-#       --security-opt label=disable --security-opt apparmor=unconfined \
-#       -v claude-config:/home/dev/.claude:U \
+# inside the container and are discarded with it. keep-id maps your host
+# account to "podman" (UID 1000 in the image); /dev/fuse and label=disable let
+# rootless Podman run inside the container:
+#   podman run --rm -it --env-file .env \
+#       --userns=keep-id:uid=1000,gid=1000 --device /dev/fuse \
+#       --security-opt label=disable \
 #       claude-glab
 #
 # One-shot, non-interactive:
-#   sudo podman run --rm --env-file .env \
-#       --security-opt label=disable --security-opt apparmor=unconfined \
-#       -v claude-config:/home/dev/.claude:U \
+#   podman run --rm --env-file .env \
+#       --userns=keep-id:uid=1000,gid=1000 --device /dev/fuse \
+#       --security-opt label=disable \
 #       claude-glab bash -lc 'glab repo clone group/project && cd project && \
 #           claude -p "Review the open merge requests"'
 
-FROM debian:trixie-slim
+FROM quay.io/podman/stable
 
-# UID/GID of "dev". Under rootful Podman they are the same IDs on the host, so
-# match them to your account (run.sh passes them) to share files such as the
-# host's Claude login.
-ARG UID=1000
-ARG GID=1000
-ARG USERNAME=dev
+ARG USERNAME=podman
 # Optional: pin Claude Code, e.g. --build-arg CLAUDE_VERSION=2.0.30, or "stable".
 # Defaults to the installer's "latest" channel.
 ARG CLAUDE_VERSION
@@ -49,79 +48,44 @@ ARG OPENCODE_VERSION
 # Claude Code from updating itself into the throwaway container layer; rebuild
 # the image to upgrade instead. OPENCODE_DISABLE_AUTOUPDATE does the same for
 # opencode.
-ENV DEBIAN_FRONTEND=noninteractive \
-    LANG=C.UTF-8 \
+ENV LANG=C.UTF-8 \
     GIT_TERMINAL_PROMPT=0 \
     CLAUDE_CONFIG_DIR=/home/${USERNAME}/.claude \
     DISABLE_AUTOUPDATER=1 \
     OPENCODE_DISABLE_AUTOUPDATE=1
 
-# git and glab both ship in the Debian trixie repositories. jq and ripgrep are
-# handy for triage and code review. podman, with uidmap (newuidmap and
-# newgidmap) and crun, lets "dev" run rootless containers inside this one;
-# libcap2-bin gives newuidmap/newgidmap file capabilities, see below.
-RUN apt-get update \
- && apt-get install --yes --no-install-recommends \
-        ca-certificates \
-        curl \
+# Podman, crun, fuse-overlayfs, passt and newuidmap/newgidmap (with the file
+# capabilities they need in a container) come with the base image. git and glab
+# are in the Fedora repositories; jq and ripgrep are handy for triage and code
+# review.
+RUN dnf -y install --setopt=install_weak_deps=False \
         git \
         glab \
         jq \
-        less \
-        openssh-client \
-        procps \
+        openssh-clients \
+        procps-ng \
         ripgrep \
-        podman \
-        crun \
-        conmon \
-        uidmap \
-        libcap2-bin \
-        catatonit \
-        passt \
- && rm -rf /var/lib/apt/lists/* \
- && chmod 0755 /usr/bin/newuidmap /usr/bin/newgidmap \
- && setcap cap_setuid=ep /usr/bin/newuidmap \
- && setcap cap_setgid=ep /usr/bin/newgidmap
+ && dnf clean all \
+ && rm -rf /var/cache/dnf /var/cache/libdnf5
 
-# Above: Debian ships newuidmap/newgidmap setuid root, and inside a container
-# without CAP_SYS_ADMIN they then fail to write the nested user namespace's ID
-# map ("write to uid_map failed: Operation not permitted"). With only the one
-# file capability each needs (as Fedora and the upstream Podman image ship
-# them), they work under the default capability set.
-
-# "dev" gets no sudo and no password: the agent cannot become root, install
-# system packages or change anything outside its home and /tmp. For admin work,
-# open a root shell from the host with `sudo podman exec -it -u root <name> bash`.
+# The agent runs as the base image's user "podman" (UID/GID 1000), which is set
+# up for rootless Podman: subordinate IDs 1-65535 except its own (/etc/subuid,
+# /etc/subgid), its own containers.conf, and its nested storage
+# (~/.local/share/containers) as a volume.
 #
-# For rootless Podman, "dev" owns every container UID/GID from 1 to 65535 except
-# its own as subordinate IDs, the same layout as the upstream Podman image. The
-# outer container is rootful without a user namespace, so these are host IDs too;
-# files with them only ever live in the nested storage volume below.
-RUN groupadd --gid "${GID}" "${USERNAME}" \
- && useradd --uid "${UID}" --gid "${GID}" --create-home --shell /bin/bash "${USERNAME}" \
- && passwd --lock "${USERNAME}" >/dev/null \
- && printf '%s:1:%d\n%s:%d:%d\n' \
-        "${USERNAME}" "$((UID - 1))" "${USERNAME}" "$((UID + 1))" "$((65535 - UID))" >/etc/subuid \
- && printf '%s:1:%d\n%s:%d:%d\n' \
-        "${USERNAME}" "$((GID - 1))" "${USERNAME}" "$((GID + 1))" "$((65535 - GID))" >/etc/subgid \
- && install -d \
+# It gets passwordless sudo, so the agent can install packages or change the
+# system when a task needs it. That root exists only inside the container: the
+# outer container is rootless, so its root is one of your subordinate IDs on
+# the host, not host root, and every change is gone with the container.
+RUN install -d -o "${USERNAME}" -g "${USERNAME}" \
         "/home/${USERNAME}/work" \
         "/home/${USERNAME}/.claude" \
-        "/home/${USERNAME}/.config/containers" \
         "/home/${USERNAME}/.config/opencode" \
+        "/home/${USERNAME}/.local/bin" \
         "/home/${USERNAME}/.local/share/opencode" \
-        "/home/${USERNAME}/.local/share/containers" \
- && chown -R "${USERNAME}:${USERNAME}" "/home/${USERNAME}"
-
-# Podman settings for nested containers (see the comments in the files).
-COPY containers/containers.conf /etc/containers/containers.conf
-COPY --chown=${UID}:${GID} containers/user-containers.conf /home/${USERNAME}/.config/containers/containers.conf
-RUN chmod 0644 /etc/containers/containers.conf
-
-# Nested image and container storage. Its overlay upper dirs cannot sit on the
-# container's own overlay filesystem, so it is a volume: an anonymous one that
-# `podman run --rm` deletes with the container.
-VOLUME /home/${USERNAME}/.local/share/containers
+ && printf '%s ALL=(ALL) NOPASSWD: ALL\n' "${USERNAME}" >"/etc/sudoers.d/${USERNAME}" \
+ && chmod 0440 "/etc/sudoers.d/${USERNAME}" \
+ && visudo -cq
 
 # Agent guidance goes in the system-wide (managed) memory file rather than
 # ~/.claude/CLAUDE.md, so it is always loaded and is never hidden or frozen by
@@ -137,9 +101,9 @@ RUN chmod 0755 /usr/local/bin/entrypoint.sh \
 # install script only installs opencode 1. It goes in /usr/local/bin, so it is
 # on every PATH; the auto-updater is disabled, rebuild to upgrade.
 RUN set -eu; \
-    case "$(dpkg --print-architecture)" in \
-        amd64) arch=x64 ;; \
-        arm64) arch=arm64 ;; \
+    case "$(uname -m)" in \
+        x86_64) arch=x64 ;; \
+        aarch64) arch=arm64 ;; \
         *) echo "opencode: unsupported architecture" >&2; exit 1 ;; \
     esac; \
     version="${OPENCODE_VERSION:-}"; version="${version#v}"; \

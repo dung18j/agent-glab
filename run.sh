@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Run the claude-glab container with rootful Podman (through sudo).
+# Run the claude-glab container with rootless Podman.
 #
 #   ./run.sh                                   # shell, credentials from .env
 #   ./run.sh -e .env.apo                       # shell, credentials from .env.apo
@@ -15,11 +15,12 @@
 #   -n        do not use the host's Claude and opencode logins (log in inside
 #             the container)
 #
-# The container runs under rootful Podman, so that rootless Podman works inside
-# it (the agent can build and run containers). Run this script as your normal
-# user: it calls `sudo podman` itself, and reads your Claude login from your
-# home. The agent runs as the unprivileged user "dev", with no sudo,
-# whose UID/GID are yours, so it can use that file and nothing of root's.
+# The container runs under rootless Podman as your normal user, and rootless
+# Podman works inside it (the agent can build and run containers): rootless
+# inside rootless, no sudo on the host. The agent runs as the base image's user
+# "podman" (passwordless sudo, in the container). Your account is mapped to it, so
+# it can use your Claude login file; the other IDs in the container are your
+# subordinate IDs (/etc/subuid, /etc/subgid), of which you need at least 65536.
 #
 # By default every run is a fresh session: Claude Code starts with an empty
 # ~/.claude (no history, sessions or settings from earlier runs) and nothing the
@@ -44,7 +45,7 @@
 # IMAGE (default claude-glab), VOLUME (default claude-config) and OC_VOLUME
 # (default opencode-data; both used with -p) can be overridden from the
 # environment, e.g. VOLUME=claude-apo OC_VOLUME=opencode-apo ./run.sh -p
-# Images and volumes live in root's Podman storage (sudo podman images).
+# Images and volumes live in your rootless Podman storage (podman images).
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -62,7 +63,7 @@ while getopts ":e:bpnh" opt; do
         b) build=1 ;;
         p) persist=1 ;;
         n) host_creds=0 ;;
-        h) sed -n '2,47p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        h) sed -n '2,48p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         :) echo "run.sh: -${OPTARG} needs an argument" >&2; exit 2 ;;
         *) echo "run.sh: unknown option -${OPTARG} (try -h)" >&2; exit 2 ;;
     esac
@@ -79,64 +80,51 @@ if [[ ! -f "${env_file}" ]]; then
     exit 1
 fi
 
-# Rootful Podman. When already root (sudo ./run.sh), use the invoking user's
-# home and IDs, not root's.
-as_user=()
 if (( EUID == 0 )); then
-    podman=(podman)
-    if [[ -n "${SUDO_USER:-}" && "${SUDO_USER}" != root ]]; then
-        HOME="$(getent passwd "${SUDO_USER}" | cut -d: -f6)"
-        unset CLAUDE_CONFIG_DIR
-        as_user=(sudo -u "${SUDO_USER}" -H)
-    fi
-    host_uid="${SUDO_UID:-0}"
-    host_gid="${SUDO_GID:-0}"
-else
-    podman=(sudo podman)
-    host_uid="$(id -u)"
-    host_gid="$(id -g)"
-fi
-if (( host_uid == 0 )); then
-    echo "run.sh: run as your normal user, not root" >&2
+    echo "run.sh: run as your normal user, not root (the container is rootless)" >&2
     exit 1
 fi
+podman=(podman)
 
-# The image is built for your UID/GID, so "dev" owns the same files as you.
 if (( build )) || ! "${podman[@]}" image exists "${image}"; then
-    "${podman[@]}" build \
-        --build-arg UID="${host_uid}" --build-arg GID="${host_gid}" \
-        -t "${image}" "${here}"
+    "${podman[@]}" build -t "${image}" "${here}"
 fi
 
 # Allocate a TTY only when attached to a terminal, so piping and scripting work.
 tty_flags=(-i)
 [[ -t 0 && -t 1 ]] && tty_flags=(-it)
 
-# Rootless Podman inside the container needs to mount filesystems in its own
-# user namespace, which AppArmor's default container profile (and SELinux
-# labelling, on hosts that use it) forbids. The container is otherwise not
-# privileged: default capabilities and seccomp profile, and the agent is not root.
+# keep-id maps your account to "podman" (UID/GID 1000 in the image), so your
+# owner-only files are readable by "podman", and your subordinate IDs to the rest
+# of the container's IDs, which "podman" uses for its own nested containers.
+# Nested storage uses fuse-overlayfs, hence /dev/fuse. SELinux labelling (on
+# hosts that use it) would block the nested containers, so it is disabled. The
+# container is otherwise not privileged: default capabilities and seccomp
+# profile, and the agent is not root.
 #
-# There is no user namespace: "dev" has your UID, so your owner-only files are
-# readable. :U re-owns the volume to "dev". Without -p, ~/.claude is the image's
-# empty directory and goes away with --rm, as does the nested container storage.
-run_args=(--security-opt label=disable --security-opt apparmor=unconfined)
+# :U re-owns the volume to "podman". Without -p, ~/.claude is the image's empty
+# directory and goes away with --rm, as does the nested container storage.
+run_args=(
+    --userns=keep-id:uid=1000,gid=1000
+    --device /dev/fuse
+    --security-opt label=disable
+)
 if (( persist )); then
-    run_args+=(-v "${volume}:/home/dev/.claude:U")
-    run_args+=(-v "${oc_volume}:/home/dev/.local/share/opencode:U")
+    run_args+=(-v "${volume}:/home/podman/.claude:U")
+    run_args+=(-v "${oc_volume}:/home/podman/.local/share/opencode:U")
 fi
 
 host_cred_file="${CLAUDE_CONFIG_DIR:-${HOME}/.claude}/.credentials.json"
 if (( host_creds )); then
     if [[ -f "${host_cred_file}" ]]; then
-        run_args+=(-v "${host_cred_file}:/home/dev/.claude/.credentials.json")
+        run_args+=(-v "${host_cred_file}:/home/podman/.claude/.credentials.json")
     else
         echo "run.sh: no host Claude login at ${host_cred_file}; log in inside the container" >&2
     fi
 fi
 
 # opencode keeps its credentials in a database, not a file, so export them on
-# the host (as you, never as root) and hand the container a copy to import.
+# the host and hand the container a copy to import.
 oc_auth=""
 cleanup() { [[ -n "${oc_auth}" ]] && rm -f "${oc_auth}"; return 0; }
 trap cleanup EXIT
@@ -145,12 +133,10 @@ if (( host_creds )); then
     [[ -z "${host_opencode}" && -x "${HOME}/.opencode/bin/opencode" ]] \
         && host_opencode="${HOME}/.opencode/bin/opencode"
     if [[ -n "${host_opencode}" ]]; then
-        # Your runtime directory is private to you; under sudo it is root's.
-        tmp_dir="${XDG_RUNTIME_DIR:-/tmp}"
-        (( ${#as_user[@]} )) && tmp_dir=/tmp
-        oc_auth="$("${as_user[@]}" mktemp "${tmp_dir}/opencode-auth.XXXXXX")" || oc_auth=""
+        # Your runtime directory is private to you.
+        oc_auth="$(mktemp "${XDG_RUNTIME_DIR:-/tmp}/opencode-auth.XXXXXX")" || oc_auth=""
         if [[ -n "${oc_auth}" ]] \
-                && "${as_user[@]}" "${host_opencode}" auth export >"${oc_auth}" 2>/dev/null \
+                && "${host_opencode}" auth export >"${oc_auth}" 2>/dev/null \
                 && [[ -s "${oc_auth}" ]]; then
             run_args+=(-v "${oc_auth}:/run/secrets/opencode-auth.json:ro")
         else

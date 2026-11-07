@@ -62,16 +62,17 @@ shells that do not inherit the environment. Environment variables win when set.
   with other sessions and are not reachable from the host. Services on the host
   are at `host.containers.internal`.
 
-## You are an unprivileged user
+## Your user and sudo
 
-You run as `dev`, with no `sudo` and no root password. You cannot install
-system packages (`apt-get`) or write outside your home directory and `/tmp`. Do
-not try to work around this; if the task needs a system change, say so.
+You run as `podman`, with passwordless `sudo`. Root is root inside this
+container only. Use `sudo` when a task needs it, for example
+`sudo dnf -y install <package>` (Fedora); otherwise work as `podman`.
 
 Already installed: `git`, `glab`, `claude`, `opencode`, `podman`, `jq`, `ripgrep`
-(`rg`), `curl`, `less`, `openssh-client`. Prefer these before adding an
+(`rg`), `curl`, `less`, `openssh-clients`. Prefer these before adding an
 alternative. When you need something else:
 
+- Install it with `sudo dnf -y install <package>`.
 - Run it in a container (see below), for example
   `podman run --rm -v "$PWD:/src:Z" -w /src docker.io/library/node:22 npm test`.
 - Or download a standalone binary into `~/.local/bin` and `chmod +x` it.
@@ -81,7 +82,7 @@ every run, note that it should be added to the image.
 
 ## Containers
 
-`podman` works for `dev` (rootless, inside this container): `podman run`,
+`podman` works for you (rootless, inside this container): `podman run`,
 `podman build`, `podman ps` and so on, with no `sudo`.
 
 - Use fully qualified image names (`docker.io/library/alpine`), so nothing
