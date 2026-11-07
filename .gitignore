@@ -1,0 +1,6 @@
+# Real credentials
+.env
+.env.*
+
+# Keep the template
+!.env.example
