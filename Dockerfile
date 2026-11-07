@@ -130,8 +130,7 @@ COPY claude-config/CLAUDE.md /etc/claude-code/CLAUDE.md
 # opencode does not read /etc/claude-code; entrypoint.sh writes the same guidance
 # (plus this session's facts) to ~/.config/opencode/AGENTS.md at start-up.
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
-COPY claude-wrapper.sh /usr/local/bin/claude-wrapper
-RUN chmod 0755 /usr/local/bin/entrypoint.sh /usr/local/bin/claude-wrapper \
+RUN chmod 0755 /usr/local/bin/entrypoint.sh \
  && chmod 0644 /etc/claude-code/CLAUDE.md
 
 # opencode 2 is installed from its GitHub release tarball: the opencode.ai
@@ -162,15 +161,10 @@ ENV HOME=/home/${USERNAME}
 # right binary for the build platform and puts a launcher in ~/.local/bin.
 RUN curl -fsSL https://claude.ai/install.sh | bash -s -- ${CLAUDE_VERSION}
 
-# Expose the binaries on the default PATH so they also work in login shells,
-# which reset PATH. `claude` goes through claude-wrapper, which pre-accepts the
-# folder-trust prompt so each fresh session can take a prompt right away. The
-# installer's launcher moves to claude-real, so ~/.local/bin/claude (first on
-# PATH in login shells) is the wrapper too.
+# Expose the binary on the default PATH so it also works in login shells,
+# which reset PATH.
 USER root
-RUN mv "/home/${USERNAME}/.local/bin/claude" "/home/${USERNAME}/.local/bin/claude-real" \
- && ln -s /usr/local/bin/claude-wrapper "/home/${USERNAME}/.local/bin/claude" \
- && ln -sf /usr/local/bin/claude-wrapper /usr/local/bin/claude
+RUN ln -sf "/home/${USERNAME}/.local/bin/claude" /usr/local/bin/claude
 USER ${USERNAME}
 
 # Accept repositories regardless of owner, so git never rejects a workspace with

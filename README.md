@@ -210,15 +210,6 @@ this run: the GitLab host, whether a token is set, and the commit identity.
 Claude Code loads it when started in `~/work` or a clone below it. Together the two files mean the
 agent knows the environment from the first prompt, without looking anything up.
 
-### Ready to prompt
-
-Because every `run.sh` session has a fresh `~/.claude`, Claude Code would ask
-"Do you trust this folder?" on every launch and again in every clone. In the
-image, `claude` is a small wrapper (`claude-wrapper.sh`, in front of the real
-launcher, which becomes `~/.local/bin/claude-real`) that marks the current
-directory and its git root as trusted before an interactive start, so
-`./run.sh claude` goes straight to the prompt. `claude -p` never asks, so the wrapper leaves it alone.
-
 ## What's inside
 
 `git`, `glab`, `claude`, `opencode`, `podman` (with `crun`, `conmon`, `uidmap`, `passt`,
