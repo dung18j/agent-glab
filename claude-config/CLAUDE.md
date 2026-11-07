@@ -7,9 +7,9 @@ REST calls.
 ## Credentials are already configured
 
 - `glab` is authenticated. Do **not** run `glab auth login`.
-- The GitLab host is not necessarily `gitlab.com`. `~/work/CLAUDE.md` names the
-  host for this session; `glab config get host` reports it too. Never assume
-  the default.
+- The GitLab host is not necessarily `gitlab.com`. The "This session" notes
+  (`~/work/CLAUDE.md`, or the end of these rules) name the host for this
+  session; `glab config get host` reports it too. Never assume the default.
 - `glab auth status` shows the current authentication.
 - `git clone` / `git push` over HTTPS work for that host through glab's
   credential helper, with no extra setup. The token is offered to that host
@@ -68,7 +68,7 @@ You run as `dev`, with no `sudo` and no root password. You cannot install
 system packages (`apt-get`) or write outside your home directory and `/tmp`. Do
 not try to work around this; if the task needs a system change, say so.
 
-Already installed: `git`, `glab`, `claude`, `podman`, `jq`, `ripgrep`
+Already installed: `git`, `glab`, `claude`, `opencode`, `podman`, `jq`, `ripgrep`
 (`rg`), `curl`, `less`, `openssh-client`. Prefer these before adding an
 alternative. When you need something else:
 

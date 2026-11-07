@@ -1,6 +1,6 @@
-# glab + Claude Code container
+# glab + Claude Code / opencode container
 
-A Debian trixie image with `git`, `glab` (GitLab CLI), Claude Code and Podman,
+A Debian trixie image with `git`, `glab` (GitLab CLI), Claude Code, opencode and Podman,
 built for running a coding agent against GitLab: cloning repositories,
 opening and reviewing merge requests, triaging issues, and building and running
 containers.
@@ -28,7 +28,9 @@ are the same IDs on the host, which is what lets `dev` use your mounted Claude
 login.
 
 Pin a Claude Code version with `--build-arg CLAUDE_VERSION=<version>` (or
-`stable`). The auto-updater is disabled; rebuild to upgrade.
+`stable`), and opencode with `--build-arg OPENCODE_VERSION=<version>` (default:
+the newest 2.x release on GitHub; the opencode.ai install script only installs
+opencode 1). Both auto-updaters are disabled; rebuild to upgrade.
 
 ## Configure
 
@@ -48,9 +50,10 @@ user; it calls `sudo` itself and reads your Claude login from your home:
 ```sh
 ./run.sh -e .env.apo                # shell (default env file: .env)
 ./run.sh -e .env.apo claude         # Claude Code TUI
+./run.sh -e .env.apo opencode       # opencode TUI
 ./run.sh -b -e .env.apo             # rebuild the image first (built anyway if missing)
 ./run.sh -p -e .env.apo             # keep state between runs (see Persistence)
-./run.sh -n -e .env.apo             # don't use the host's Claude login
+./run.sh -n -e .env.apo             # don't use the host's Claude / opencode logins
 ./run.sh -h                         # all options
 ```
 
@@ -60,6 +63,14 @@ host and container share that one file, including token refreshes. This is the
 one exception to "nothing from the host is mounted". `dev` has your UID, so it
 can read that owner-only file; with `-p` the volume is mounted with `:U` so it
 is owned by `dev` too.
+
+If opencode is installed on the host (on `PATH` or in `~/.opencode/bin`),
+`run.sh` also exports its credentials with `opencode auth export` into a
+temporary file (in `$XDG_RUNTIME_DIR`), mounts it read-only at
+`/run/secrets/opencode-auth.json`, and the entrypoint imports it into the
+container's opencode. The file is deleted when the container exits. opencode
+keeps credentials in a database, so this is a copy rather than a shared file:
+logins and token refreshes in the container do not reach the host.
 
 Each container gets its own network namespace (Podman's default network, not
 `--network=host`), so several sessions can run at once and open the same ports
@@ -88,6 +99,7 @@ Inside the shell, clone and work, then start the agent:
 glab repo clone group/project
 cd project
 claude                    # TUI, or: claude -p "Review the open MRs"
+opencode                  # TUI, or: opencode run --auto "Review the open MRs"
 ```
 
 Non-interactive, one-shot agent run (clone, act, exit):
@@ -126,11 +138,13 @@ across `--rm` runs:
 | Volume          | Path        | Holds                                                    |
 | --------------- | ----------- | -------------------------------------------------------- |
 | `claude-config` | `~/.claude` | login, `.claude.json`, `settings.json`, sessions, history |
+| `opencode-data` | `~/.local/share/opencode` | opencode credentials, sessions, history (database) |
 
 The image sets `CLAUDE_CONFIG_DIR=~/.claude`, which moves `.claude.json`
 (normally at `~/.claude.json`) inside that directory, so one volume covers
-everything. The volume lives in root's Podman storage; `:U` keeps it owned by
-`dev`. Remove it with `sudo podman volume rm claude-config`.
+everything. The volumes live in root's Podman storage; `:U` keeps them owned by
+`dev`. Rename them with `VOLUME=` / `OC_VOLUME=`, and remove them with
+`sudo podman volume rm claude-config opencode-data`.
 
 ## How credentials work
 
@@ -167,6 +181,13 @@ credentials are missing. Override it in `.env` if you want prompts.
 
 Check which one is in use with `/status` inside `claude`.
 
+## opencode credentials
+
+`run.sh` copies the host's opencode credentials by default (see Run). Otherwise
+log in inside the container with `opencode auth login`, or set the provider's
+API key in `.env` (for example `ANTHROPIC_API_KEY`). Check with
+`opencode auth list`.
+
 ## Agent guidance
 
 The image installs `claude-config/CLAUDE.md` as the system-wide memory file
@@ -178,6 +199,11 @@ volume never hides or freezes it. Edit the file and rebuild to change it; use
 `~/.claude/CLAUDE.md` (in the volume) for personal additions.
 
 Confirm it is loaded with `/memory` inside `claude`.
+
+opencode does not read `/etc/claude-code`, and stops looking for project rules
+at the git root. At start-up `entrypoint.sh` therefore writes
+`~/.config/opencode/AGENTS.md`, its global rules file, with the same guidance
+followed by this session's facts (below), so opencode gets them in every clone.
 
 At start-up `entrypoint.sh` also writes `~/work/CLAUDE.md` with the values of
 this run: the GitLab host, whether a token is set, and the commit identity.
@@ -195,9 +221,10 @@ directory and its git root as trusted before an interactive start, so
 
 ## What's inside
 
-`git`, `glab`, `claude`, `podman` (with `crun`, `conmon`, `uidmap`, `passt`,
+`git`, `glab`, `claude`, `opencode`, `podman` (with `crun`, `conmon`, `uidmap`, `passt`,
 `catatonit`), `jq`, `ripgrep`, `openssh-client`, `curl`, `procps`. Claude Code
-is installed with the official native installer.
+is installed with the official native installer, opencode from its GitHub
+release tarball.
 
 ## Limits on the agent
 

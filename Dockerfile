@@ -1,8 +1,8 @@
 # syntax=docker/dockerfile:1
 #
-# Debian trixie image with git, glab (GitLab CLI), Claude Code and Podman,
-# for the unprivileged user "dev" (no sudo).
-# Intended for a Claude Code agent that clones GitLab repositories, opens or
+# Debian trixie image with git, glab (GitLab CLI), Claude Code, opencode and
+# Podman, for the unprivileged user "dev" (no sudo).
+# Intended for a coding agent (Claude Code or opencode) that clones GitLab repositories, opens or
 # reviews merge requests, triages issues, and runs containers (rootless Podman
 # inside the container).
 #
@@ -36,6 +36,9 @@ ARG USERNAME=dev
 # Optional: pin Claude Code, e.g. --build-arg CLAUDE_VERSION=2.0.30, or "stable".
 # Defaults to the installer's "latest" channel.
 ARG CLAUDE_VERSION
+# Optional: pin opencode, e.g. --build-arg OPENCODE_VERSION=2.2.6. Defaults to
+# the newest 2.x release on GitHub.
+ARG OPENCODE_VERSION
 
 # GIT_TERMINAL_PROMPT=0 makes git fail fast instead of hanging on a prompt when
 # credentials are missing or wrong. Set GIT_TERMINAL_PROMPT=1 in .env to allow
@@ -44,12 +47,14 @@ ARG CLAUDE_VERSION
 # CLAUDE_CONFIG_DIR moves ~/.claude.json (login and onboarding state) inside
 # ~/.claude, so a single volume persists everything. DISABLE_AUTOUPDATER stops
 # Claude Code from updating itself into the throwaway container layer; rebuild
-# the image to upgrade instead.
+# the image to upgrade instead. OPENCODE_DISABLE_AUTOUPDATE does the same for
+# opencode.
 ENV DEBIAN_FRONTEND=noninteractive \
     LANG=C.UTF-8 \
     GIT_TERMINAL_PROMPT=0 \
     CLAUDE_CONFIG_DIR=/home/${USERNAME}/.claude \
-    DISABLE_AUTOUPDATER=1
+    DISABLE_AUTOUPDATER=1 \
+    OPENCODE_DISABLE_AUTOUPDATE=1
 
 # git and glab both ship in the Debian trixie repositories. jq and ripgrep are
 # handy for triage and code review. podman, with uidmap (newuidmap and
@@ -103,6 +108,8 @@ RUN groupadd --gid "${GID}" "${USERNAME}" \
         "/home/${USERNAME}/work" \
         "/home/${USERNAME}/.claude" \
         "/home/${USERNAME}/.config/containers" \
+        "/home/${USERNAME}/.config/opencode" \
+        "/home/${USERNAME}/.local/share/opencode" \
         "/home/${USERNAME}/.local/share/containers" \
  && chown -R "${USERNAME}:${USERNAME}" "/home/${USERNAME}"
 
@@ -120,10 +127,33 @@ VOLUME /home/${USERNAME}/.local/share/containers
 # ~/.claude/CLAUDE.md, so it is always loaded and is never hidden or frozen by
 # the volume mounted over ~/.claude. Rebuild the image to change it.
 COPY claude-config/CLAUDE.md /etc/claude-code/CLAUDE.md
+# opencode does not read /etc/claude-code; entrypoint.sh writes the same guidance
+# (plus this session's facts) to ~/.config/opencode/AGENTS.md at start-up.
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
 COPY claude-wrapper.sh /usr/local/bin/claude-wrapper
 RUN chmod 0755 /usr/local/bin/entrypoint.sh /usr/local/bin/claude-wrapper \
  && chmod 0644 /etc/claude-code/CLAUDE.md
+
+# opencode 2 is installed from its GitHub release tarball: the opencode.ai
+# install script only installs opencode 1. It goes in /usr/local/bin, so it is
+# on every PATH; the auto-updater is disabled, rebuild to upgrade.
+RUN set -eu; \
+    case "$(dpkg --print-architecture)" in \
+        amd64) arch=x64 ;; \
+        arm64) arch=arm64 ;; \
+        *) echo "opencode: unsupported architecture" >&2; exit 1 ;; \
+    esac; \
+    version="${OPENCODE_VERSION:-}"; version="${version#v}"; \
+    if [ -z "${version}" ]; then \
+        version="$(curl -fsSL 'https://api.github.com/repos/anomalyco/opencode/releases?per_page=50' \
+            | jq -r '[.[] | select(.draft | not) | select(.prerelease | not) | .tag_name | select(test("^v2[.][0-9]+[.][0-9]+$"))][0] // empty')"; \
+        version="${version#v}"; \
+    fi; \
+    [ -n "${version}" ] || { echo "opencode: could not find a 2.x release" >&2; exit 1; }; \
+    curl -fsSL "https://github.com/anomalyco/opencode/releases/download/v${version}/opencode-linux-${arch}.tar.gz" \
+        | tar -xz -C /usr/local/bin opencode; \
+    chmod 0755 /usr/local/bin/opencode; \
+    /usr/local/bin/opencode --version
 
 USER ${USERNAME}
 ENV HOME=/home/${USERNAME}
