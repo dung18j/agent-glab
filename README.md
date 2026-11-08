@@ -197,7 +197,7 @@ API key in `.env` (for example `ANTHROPIC_API_KEY`). Check with
 
 ## Agent guidance
 
-The image installs `claude-config/CLAUDE.md` as the system-wide memory file
+The image installs `claude-config/AGENT.md` as the system-wide memory file
 `/etc/claude-code/CLAUDE.md`, which Claude Code loads in every session. It tells the agent that `glab` is already authenticated, to read the host with
 `glab config get host` instead of assuming `gitlab.com`, which `glab` commands to
 use, to pass non-interactive flags, that it has passwordless `sudo`, and how to use

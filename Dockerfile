@@ -90,7 +90,7 @@ RUN install -d -o "${USERNAME}" -g "${USERNAME}" \
 # Agent guidance goes in the system-wide (managed) memory file rather than
 # ~/.claude/CLAUDE.md, so it is always loaded and is never hidden or frozen by
 # the volume mounted over ~/.claude. Rebuild the image to change it.
-COPY claude-config/CLAUDE.md /etc/claude-code/CLAUDE.md
+COPY claude-config/AGENT.md /etc/claude-code/CLAUDE.md
 # opencode does not read /etc/claude-code; entrypoint.sh writes the same guidance
 # (plus this session's facts) to ~/.config/opencode/AGENTS.md at start-up.
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
